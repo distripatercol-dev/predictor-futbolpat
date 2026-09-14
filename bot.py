@@ -1,0 +1,380 @@
+import asyncio
+import numpy as np
+import requests
+import pytz
+from datetime import datetime, timedelta
+from scipy.stats import poisson, norm
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+ZONA_LOCAL = pytz.timezone("America/Bogota")
+
+# ==========================================
+# 🔑 PEGA AQUÍ TUS CLAVES DIRECTAMENTE
+# ==========================================
+TELEGRAM_TOKEN = "8974980311:AAG-S2fXIinCoak8rZ14s3N6VF5N-m6V7VE".strip()
+API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
+
+# --- CONSULTA DINÁMICA A LA API ---
+def obtener_metricas_equipo(nombre_equipo, api_key):
+    headers = {"x-apisports-key": api_key}
+    try:
+        url_t = f"https://v3.football.api-sports.io/teams?search={nombre_equipo.strip()}"
+        res_t = requests.get(url_t, headers=headers, timeout=8).json().get("response", [])
+        if not res_t:
+            return None
+        team_id = res_t[0]["team"]["id"]
+
+        url_f = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=10"
+        res_f = requests.get(url_f, headers=headers, timeout=8).json().get("response", [])
+        if not res_f:
+            return None
+
+        goles_favor, goles_contra = 0, 0
+        partidos = len(res_f)
+        for f in res_f:
+            es_local = f["teams"]["home"]["id"] == team_id
+            gf = f["goals"]["home"] if es_local else f["goals"]["away"]
+            gc = f["goals"]["away"] if es_local else f["goals"]["home"]
+            goles_favor += gf if gf is not None else 1
+            goles_contra += gc if gc is not None else 1
+
+        return {
+            "ataque": max(0.6, goles_favor / partidos),
+            "defensa": max(0.6, goles_contra / partidos)
+        }
+    except Exception:
+        return None
+
+# --- MODELO MATEMÁTICO: BET BUILDER (64% - 70% | BTTS 55%) ---
+def calcular_mercados(loc, vis, api_key):
+    stats_loc = obtener_metricas_equipo(loc, api_key)
+    stats_vis = obtener_metricas_equipo(vis, api_key)
+
+    if stats_loc and stats_vis:
+        xg_loc = (stats_loc["ataque"] + stats_vis["defensa"]) / 2.0
+        xg_vis = (stats_vis["ataque"] + stats_loc["defensa"]) / 2.0
+        med_corners = 7.5 + (xg_loc + xg_vis) * 0.9
+    else:
+        seed_l = (sum(ord(c) for c in loc) % 10) / 10.0
+        seed_v = (sum(ord(c) for c in vis) % 10) / 10.0
+        xg_loc = 1.30 + seed_l * 0.5
+        xg_vis = 1.00 + seed_v * 0.4
+        med_corners = 9.4 + (seed_l - 0.5)
+
+    p_loc, p_emp, p_vis = 0.0, 0.0, 0.0
+    p_o20, p_u30, p_o15, p_u35 = 0.0, 0.0, 0.0, 0.0
+
+    for i in range(7):
+        for j in range(7):
+            prob = poisson.pmf(i, xg_loc) * poisson.pmf(j, xg_vis)
+            if i > j: p_loc += prob
+            elif i == j: p_emp += prob
+            else: p_vis += prob
+
+            if i + j >= 2: p_o20 += prob
+            if i + j <= 3: p_u30 += prob
+            if i + j >= 1.5: p_o15 += prob
+            if i + j <= 3.5: p_u35 += prob
+
+    p_1x = p_loc + p_emp
+    p_x2 = p_vis + p_emp
+    p_12 = p_loc + p_vis
+    p_dnb_loc = p_loc / (p_loc + p_vis) if (p_loc + p_vis) > 0 else 0.5
+    p_dnb_vis = p_vis / (p_loc + p_vis) if (p_loc + p_vis) > 0 else 0.5
+
+    p_loc_o05 = 1.0 - poisson.pmf(0, xg_loc)
+    p_loc_o10_as = 1.0 - (poisson.pmf(0, xg_loc) + (poisson.pmf(1, xg_loc) * 0.5))
+    p_loc_u20_as = sum(poisson.pmf(k, xg_loc) for k in range(2)) + (poisson.pmf(2, xg_loc) * 0.5)
+    p_loc_u25 = sum(poisson.pmf(k, xg_loc) for k in range(3))
+
+    p_vis_o05 = 1.0 - poisson.pmf(0, xg_vis)
+    p_vis_u15 = sum(poisson.pmf(k, xg_vis) for k in range(2))
+    p_vis_o10_as = 1.0 - (poisson.pmf(0, xg_vis) + (poisson.pmf(1, xg_vis) * 0.5))
+
+    p_btts_si = (1.0 - poisson.pmf(0, xg_loc)) * (1.0 - poisson.pmf(0, xg_vis))
+    p_btts_no = 1.0 - p_btts_si
+
+    p_corners85 = 1.0 - norm.cdf(8.5, loc=med_corners, scale=2.7)
+    p_corners95 = 1.0 - norm.cdf(9.5, loc=med_corners, scale=2.7)
+    p_corners_u115 = norm.cdf(11.5, loc=med_corners, scale=2.7)
+
+    med_amarillas = 4.6
+    p_amarillas35 = 1.0 - norm.cdf(3.5, loc=med_amarillas, scale=1.4)
+    p_amarillas45 = 1.0 - norm.cdf(4.5, loc=med_amarillas, scale=1.4)
+    p_amarillas_u55 = norm.cdf(5.5, loc=med_amarillas, scale=1.4)
+
+    p_faltas225 = 1.0 - norm.cdf(22.5, loc=24.5, scale=4.0)
+    p_faltas235 = 1.0 - norm.cdf(23.5, loc=24.5, scale=4.0)
+    p_faltas_u265 = norm.cdf(26.5, loc=24.5, scale=4.0)
+
+    med_tiros_puerta_tot = 5.2 + (xg_loc + xg_vis) * 1.3
+    p_tarco75 = 1.0 - norm.cdf(7.5, loc=med_tiros_puerta_tot, scale=2.4)
+    p_tarco85 = 1.0 - norm.cdf(8.5, loc=med_tiros_puerta_tot, scale=2.4)
+    p_tarco_u105 = norm.cdf(10.5, loc=med_tiros_puerta_tot, scale=2.4)
+
+    med_tarco_loc = 2.4 + (xg_loc * 1.5)
+    med_tarco_vis = 2.0 + (xg_vis * 1.4)
+    p_tarco_loc35 = 1.0 - norm.cdf(3.5, loc=med_tarco_loc, scale=1.6)
+    p_tarco_loc45 = 1.0 - norm.cdf(4.5, loc=med_tarco_loc, scale=1.6)
+    p_tarco_vis25 = 1.0 - norm.cdf(2.5, loc=med_tarco_vis, scale=1.5)
+    p_tarco_vis35 = 1.0 - norm.cdf(3.5, loc=med_tarco_vis, scale=1.5)
+
+    med_tiros_tot = 15.0 + (xg_loc + xg_vis) * 3.4
+    p_tiros215 = 1.0 - norm.cdf(21.5, loc=med_tiros_tot, scale=4.5)
+    p_tiros225 = 1.0 - norm.cdf(22.5, loc=med_tiros_tot, scale=4.5)
+    p_tiros_u265 = norm.cdf(26.5, loc=med_tiros_tot, scale=4.5)
+
+    mercados_estandar = [
+        ("Equipo Ganador", f"Gana directo: {loc} (1)", p_loc),
+        ("Equipo Ganador", f"Gana directo: {vis} (2)", p_vis),
+        ("Equipo Ganador", f"{loc} o Empate (1X)", p_1x),
+        ("Equipo Ganador", f"{vis} o Empate (X2)", p_x2),
+        ("Equipo Ganador", f"Cualquiera Gana: {loc} o {vis} (12)", p_12),
+        ("Equipo Ganador", f"Empate Apuesta No Válida: {loc}", p_dnb_loc),
+        ("Equipo Ganador", f"Empate Apuesta No Válida: {vis}", p_dnb_vis),
+
+        ("Tiros de Esquina", "Más de 8.5 córners totales", p_corners85),
+        ("Tiros de Esquina", "Más de 9.5 córners totales", p_corners95),
+        ("Tiros de Esquina", "Menos de 11.5 córners totales", p_corners_u115),
+
+        ("Total Goles", "Más de 1.5 goles totales", p_o15),
+        ("Total Goles", "Más de 2.0 goles asiáticos", p_o20),
+        ("Total Goles", "Menos de 3.0 goles asiáticos", p_u30),
+        ("Total Goles", "Menos de 3.5 goles totales", p_u35),
+
+        ("Tiros a Puerta", "Más de 7.5 tiros al arco totales", p_tarco75),
+        ("Tiros a Puerta", "Más de 8.5 tiros al arco totales", p_tarco85),
+        ("Tiros a Puerta", "Menos de 10.5 tiros al arco totales", p_tarco_u105),
+        ("Tiros a Puerta", f"{loc} Más de 3.5 tiros al arco", p_tarco_loc35),
+        ("Tiros a Puerta", f"{loc} Más de 4.5 tiros al arco", p_tarco_loc45),
+        ("Tiros a Puerta", f"{vis} Más de 2.5 tiros al arco", p_tarco_vis25),
+        ("Tiros a Puerta", f"{vis} Más de 3.5 tiros al arco", p_tarco_vis35),
+
+        ("Tiros Totales", "Más de 21.5 tiros totales", p_tiros215),
+        ("Tiros Totales", "Más de 22.5 tiros totales", p_tiros225),
+        ("Tiros Totales", "Menos de 26.5 tiros totales", p_tiros_u265),
+
+        ("Tarjetas Amarillas", "Más de 3.5 tarjetas amarillas", p_amarillas35),
+        ("Tarjetas Amarillas", "Más de 4.5 tarjetas amarillas", p_amarillas45),
+        ("Tarjetas Amarillas", "Menos de 5.5 tarjetas amarillas", p_amarillas_u55),
+
+        ("Total Faltas", "Más de 22.5 faltas totales", p_faltas225),
+        ("Total Faltas", "Más de 23.5 faltas totales", p_faltas235),
+        ("Total Faltas", "Menos de 26.5 faltas totales", p_faltas_u265)
+    ]
+
+    picks = [m for m in mercados_estandar if 0.64 <= m[2] <= 0.70]
+
+    goles_equipos = [
+        ("Goles Local", f"{loc} marca más de 1.0 gol asiático", p_loc_o10_as),
+        ("Goles Local", f"{loc} menos de 2.0 goles asiáticos", p_loc_u20_as),
+        ("Goles Local", f"{loc} anota gol (Más de 0.5)", p_loc_o05),
+        ("Goles Local", f"{loc} menos de 2.5 goles", p_loc_u25),
+        ("Goles Visitante", f"{vis} anota gol (Más de 0.5)", p_vis_o05),
+        ("Goles Visitante", f"{vis} menos de 1.5 goles", p_vis_u15),
+        ("Goles Visitante", f"{vis} más de 1.0 gol asiático", p_vis_o10_as)
+    ]
+    for g in goles_equipos:
+        if 0.63 <= g[2] <= 0.72:
+            picks.append(g)
+
+    btts = [
+        ("Ambos Marcan", "Ambos Equipos Anotan: SÍ", p_btts_si),
+        ("Ambos Marcan", "Ambos Equipos Anotan: NO", p_btts_no)
+    ]
+    for b in btts:
+        if 0.55 <= b[2] <= 0.72:
+            picks.append(b)
+
+    vistos = set()
+    limpios = []
+    for m in picks:
+        if m[1] not in vistos:
+            limpios.append(m)
+            vistos.add(m[1])
+
+    return limpios, xg_loc, xg_vis
+
+# --- COMANDOS TELEGRAM ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "⚽ *PREDICTOR PRO 24/7 EN LÍNEA*\n\n"
+        "Comandos:\n"
+        "👉 `/hoy` : Partidos activos/restantes hoy.\n"
+        "👉 `/manana` : Cartelera de mañana.\n"
+        "👉 `/buscar Equipo` : Rastrear partido hoy o mañana.\n"
+        "👉 `/analizar Local vs Visitante` : Análisis Bet Builder."
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    termino = " ".join(context.args).strip()
+    if not termino:
+        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar Villarreal`", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text(f"🔍 Rastreador activo para: *{termino}*...", parse_mode="Markdown")
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+
+    try:
+        url_team = f"https://v3.football.api-sports.io/teams?search={termino}"
+        r_team = requests.get(url_team, headers=headers, timeout=12).json()
+        equipos = r_team.get("response", [])
+
+        if not equipos:
+            await update.message.reply_text(f"No se encontró un equipo llamado '{termino}'.")
+            return
+
+        team_id = equipos[0]["team"]["id"]
+        team_name = equipos[0]["team"]["name"]
+
+        ahora_col = datetime.now(ZONA_LOCAL)
+        fecha_hoy = ahora_col.strftime("%Y-%m-%d")
+        fecha_manana = (ahora_col + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&season={ahora_col.year}&timezone=America/Bogota"
+        r_fix = requests.get(url_fix, headers=headers, timeout=12).json()
+        partidos = r_fix.get("response", [])
+
+        coincidencias = [
+            f for f in partidos 
+            if (f["fixture"]["date"].startswith(fecha_hoy) or f["fixture"]["date"].startswith(fecha_manana))
+            and f["fixture"]["status"]["short"] in ['1H', 'HT', '2H', 'ET', 'P', 'BT', 'LIVE', 'NS']
+        ]
+
+        if not coincidencias:
+            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados para hoy ni mañana.", parse_mode="Markdown")
+            return
+
+        resp = f"🎯 *PARTIDOS LOCALIZADOS ({team_name}):*\n\n"
+        for p in coincidencias:
+            fecha_p = datetime.fromisoformat(p["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
+            dia_txt = "HOY" if fecha_p.strftime("%Y-%m-%d") == fecha_hoy else "MAÑANA"
+            hora_str = fecha_p.strftime("%I:%M %p")
+            loc = p["teams"]["home"]["name"]
+            vis = p["teams"]["away"]["name"]
+            liga = p["league"]["name"]
+            resp += f"• `[{dia_txt} - {hora_str}]` *{loc} vs {vis}*\n  🏆 _{liga}_\n\n"
+
+        resp += "Para evaluar ejecuta:\n`/analizar Local vs Visitante`"
+        await update.message.reply_text(resp, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"Error en la búsqueda: {e}")
+
+async def hoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Obteniendo partidos activos y restantes en hora Colombia...")
+    try:
+        ahora_local = datetime.now(ZONA_LOCAL)
+        fecha_hoy = ahora_local.strftime("%Y-%m-%d")
+        fin_dia_local = ZONA_LOCAL.localize(datetime(ahora_local.year, ahora_local.month, ahora_local.day, 23, 59, 59))
+
+        headers = {"x-apisports-key": API_FOOTBALL_KEY}
+        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_hoy}&timezone=America/Bogota"
+        r = requests.get(url, headers=headers, timeout=15).json()
+        todos = r.get("response", [])
+
+        estados_en_vivo = ['1H', 'HT', '2H', 'ET', 'P', 'BT', 'LIVE']
+        restantes = []
+
+        for f in todos:
+            st = f.get("fixture", {}).get("status", {}).get("short")
+            if st in ['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'WO', 'AWD']:
+                continue
+
+            fecha_partido = datetime.fromisoformat(f["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
+            if st in estados_en_vivo or (ahora_local <= fecha_partido <= fin_dia_local):
+                f["fecha_col"] = fecha_partido
+                restantes.append(f)
+
+        if not restantes:
+            await update.message.reply_text("No hay más partidos restantes para hoy. Revisa los de mañana con `/manana`.")
+            return
+
+        bloque = f"📅 *PARTIDOS RESTANTES DE HOY ({len(restantes)} DISPONIBLES):*\n\n"
+        for idx, p in enumerate(restantes[:25], start=1):
+            st = p['fixture']['status']['short']
+            tag = "🔴 EN VIVO" if st in ['1H', 'HT', '2H', 'LIVE'] else "⏳ PRÓXIMO"
+            hora_p = p["fecha_col"].strftime("%I:%M %p")
+            loc = p['teams']['home']['name']
+            vis = p['teams']['away']['name']
+            liga = p['league']['name']
+            bloque += f"{idx}. `{tag}` [{hora_p}] *{loc} vs {vis}* _({liga})_\n"
+
+        bloque += "\nUsa `/analizar Local vs Visitante` o `/buscar NombreEquipo`"
+        await update.message.reply_text(bloque, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+
+async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Consultando partidos para MAÑANA...")
+    try:
+        manana_local = datetime.now(ZONA_LOCAL) + timedelta(days=1)
+        fecha_manana = manana_local.strftime("%Y-%m-%d")
+
+        headers = {"x-apisports-key": API_FOOTBALL_KEY}
+        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_manana}&timezone=America/Bogota"
+        r = requests.get(url, headers=headers, timeout=15).json()
+        todos = r.get("response", [])
+
+        if not todos:
+            await update.message.reply_text("No se encontraron partidos programados para mañana.")
+            return
+
+        bloque = f"📅 *PARTIDOS DE MAÑANA ({manana_local.strftime('%d/%m/%Y')}):*\n\n"
+        for idx, p in enumerate(todos[:25], start=1):
+            fecha_p = datetime.fromisoformat(p["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
+            hora_p = fecha_p.strftime("%I:%M %p")
+            loc = p['teams']['home']['name']
+            vis = p['teams']['away']['name']
+            liga = p['league']['name']
+            bloque += f"{idx}. [{hora_p}] *{loc} vs {vis}* _({liga})_\n"
+
+        bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
+        await update.message.reply_text(bloque, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+
+async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = " ".join(context.args)
+    if " vs " not in texto:
+        await update.message.reply_text("Formato requerido:\n`/analizar Local vs Visitante`", parse_mode="Markdown")
+        return
+
+    loc, vis = texto.split(" vs ")
+    loc, vis = loc.strip(), vis.strip()
+
+    await update.message.reply_text(f"📊 Analizando métricas dinámicas para: *{loc} vs {vis}*...", parse_mode="Markdown")
+
+    picks, xg_l, xg_v = calcular_mercados(loc, vis, API_FOOTBALL_KEY)
+
+    if not picks:
+        await update.message.reply_text(f"⚠️ Ningún mercado superó los filtros (64%-70% / BTTS 55%) para {loc} vs {vis}.")
+        return
+
+    resp = f"🎯 *OPCIONES FILTRADAS BET BUILDER*\n⚽ *{loc} vs {vis}*\n"
+    resp += f"📈 _xG Proyectado: {loc} ({xg_l:.2f}) - {vis} ({xg_v:.2f})_\n\n"
+    for cat, desc, prob in picks:
+        cuota = 1.0 / prob
+        resp += f"🔹 *[{cat}]* {desc}\n"
+        resp += f"   Probabilidad: *{prob*100:.1f}%* | Cuota justa: `{cuota:.2f}`\n\n"
+
+    await update.message.reply_text(resp, parse_mode="Markdown")
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("buscar", buscar))
+    app.add_handler(CommandHandler("hoy", hoy))
+    app.add_handler(CommandHandler("manana", manana))
+    app.add_handler(CommandHandler("analizar", analizar))
+
+    print("🟢 BOT INICIADO Y CORRIENDO EN LA NUBE 24/7.")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
+      
