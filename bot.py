@@ -1,4 +1,6 @@
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import numpy as np
 import requests
 import pytz
@@ -10,12 +12,29 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 ZONA_LOCAL = pytz.timezone("America/Bogota")
 
 # ==========================================
-# 🔑 PEGA AQUÍ TUS CLAVES DIRECTAMENTE
+# 🔑 TUS CLAVES DIRECTAS
 # ==========================================
-TELEGRAM_TOKEN = "8974980311:AAG-S2fXIinCoak8rZ14s3N6VF5N-m6V7VE".strip()
-API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
+TELEGRAM_TOKEN = "PEGA_AQUI_TU_TOKEN_DE_BOTFATHER".strip()
+API_FOOTBALL_KEY = "PEGA_AQUI_TU_API_KEY_DE_API_FOOTBALL".strip()
 
-# --- CONSULTA DINÁMICA A LA API ---
+# --- SERVIDOR HTTP PARA QUE RENDER NO APAGUE EL SERVICIO ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot Predictor Pro activo 24/7 en Render")
+
+    def log_message(self, format, *args):
+        return  # Silenciar logs http para mantener limpia la consola
+
+def iniciar_servidor_web():
+    try:
+        servidor = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
+        servidor.serve_forever()
+    except Exception as e:
+        print(f"Aviso del servidor web: {e}")
+
+# --- CONSULTA DINÁMICA DE HISTORIAL EN LA API ---
 def obtener_metricas_equipo(nombre_equipo, api_key):
     headers = {"x-apisports-key": api_key}
     try:
@@ -46,7 +65,7 @@ def obtener_metricas_equipo(nombre_equipo, api_key):
     except Exception:
         return None
 
-# --- MODELO MATEMÁTICO: BET BUILDER (64% - 70% | BTTS 55%) ---
+# --- MODELO MATEMÁTICO: BET BUILDER ---
 def calcular_mercados(loc, vis, api_key):
     stats_loc = obtener_metricas_equipo(loc, api_key)
     stats_vis = obtener_metricas_equipo(vis, api_key)
@@ -200,10 +219,10 @@ def calcular_mercados(loc, vis, api_key):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "⚽ *PREDICTOR PRO 24/7 EN LÍNEA*\n\n"
-        "Comandos:\n"
-        "👉 `/hoy` : Partidos activos/restantes hoy.\n"
-        "👉 `/manana` : Cartelera de mañana.\n"
-        "👉 `/buscar Equipo` : Rastrear partido hoy o mañana.\n"
+        "Comandos disponibles:\n"
+        "👉 `/hoy` : Partidos activos/restantes de hoy.\n"
+        "👉 `/manana` : Cartelera programada de mañana.\n"
+        "👉 `/buscar Equipo` : Buscar partido de hoy o mañana.\n"
         "👉 `/analizar Local vs Visitante` : Análisis Bet Builder."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -364,17 +383,24 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(resp, parse_mode="Markdown")
 
+# --- ARRANQUE PRINCIPAL ---
 def main():
+    # 1. Iniciar servidor web de respaldo para Render
+    hilo_web = threading.Thread(target=iniciar_servidor_web, daemon=True)
+    hilo_web.start()
+    print("🌐 Servidor web de Render escuchando en el puerto 10000.")
+
+    # 2. Configurar Telegram Bot
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buscar", buscar))
-    app.add_handler(CommandHandler("hoy", hoy))
-    app.add_handler(CommandHandler("manana", manana))
-    app.add_handler(CommandHandler("analizar", analizar))
+    app.add_handler(CommandHandler(["start", "Start"], start))
+    app.add_handler(CommandHandler(["buscar", "Buscar"], buscar))
+    app.add_handler(CommandHandler(["hoy", "Hoy"], hoy))
+    app.add_handler(CommandHandler(["manana", "Manana", "mañana", "Mañana"], manana))
+    app.add_handler(CommandHandler(["analizar", "Analizar"], analizar))
 
     print("🟢 BOT INICIADO Y CORRIENDO EN LA NUBE 24/7.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-      
+                                
