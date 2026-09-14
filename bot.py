@@ -25,7 +25,7 @@ ZONA_LOCAL = pytz.timezone("America/Bogota")
 # ==========================================
 # 🔑 PEGA AQUÍ TUS DOS CLAVES REALES
 # ==========================================
-TELEGRAM_TOKEN = "8974980311".strip()
+TELEGRAM_TOKEN = "8974980311:AAG-S2fXIinCoak8rZ14s3N6VF5N-m6V7VE".strip()
 API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
 
 def normalizar_texto(texto):
