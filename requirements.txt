@@ -3,3 +3,6 @@ requests
 numpy
 scipy
 pytz
+flask
+gunicorn
+
