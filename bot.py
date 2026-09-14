@@ -9,12 +9,12 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- 1. SERVIDOR WEB NATIVO PARA QUE RENDER LO MANTENGA VIVO 24/7 ---
+# --- 1. SERVIDOR FLASK PARA MANTENER RENDER ACTIVO 24/7 ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Bot Predictor Pro está activo y operando 24/7", 200
+    return "Bot Predictor Pro activo 24/7 en Render", 200
 
 def ejecutar_servidor():
     puerto = int(os.environ.get("PORT", 10000))
@@ -23,7 +23,7 @@ def ejecutar_servidor():
 ZONA_LOCAL = pytz.timezone("America/Bogota")
 
 # ==========================================
-# 🔑 TUS CLAVES DIRECTAS
+# 🔑 PEGA AQUÍ TUS DOS CLAVES REALES
 # ==========================================
 TELEGRAM_TOKEN = "8974980311".strip()
 API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
@@ -31,7 +31,7 @@ API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
 def normalizar_texto(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').strip()
 
-# --- CONSULTA DINÁMICA A LA API ---
+# --- CONSULTA DINÁMICA DE ESTADÍSTICAS A LA API ---
 def obtener_metricas_equipo(nombre_equipo, api_key):
     headers = {"x-apisports-key": api_key}
     nombre_limpio = normalizar_texto(nombre_equipo)
@@ -213,16 +213,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚽ *PREDICTOR PRO 24/7 EN LÍNEA*\n\n"
         "Comandos disponibles:\n"
         "👉 `/hoy` : Partidos de hoy (Hora Colombia).\n"
-        "👉 `/manana` : Cartelera de partidos de mañana.\n"
+        "👉 `/manana` : Partidos programados para mañana.\n"
         "👉 `/buscar Equipo` : Próximos partidos de cualquier club.\n"
-        "👉 `/analizar Local vs Visitante` : Simular cuotas Bet Builder."
+        "👉 `/analizar Local vs Visitante` : Simulación de cuotas Bet Builder."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     termino = " ".join(context.args).strip()
     if not termino:
-        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar America`", parse_mode="Markdown")
+        await update.message.reply_text("Ingresa el club. Ejemplo: `/buscar America`", parse_mode="Markdown")
         return
 
     termino_limpio = normalizar_texto(termino)
@@ -243,7 +243,7 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partidos = requests.get(url_fix, headers=headers, timeout=12).json().get("response", [])
 
         if not partidos:
-            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados en los próximos días.", parse_mode="Markdown")
+            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados en la API.", parse_mode="Markdown")
             return
 
         resp = f"🎯 *PRÓXIMOS PARTIDOS DE {team_name.upper()}:*\n\n"
@@ -338,23 +338,24 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(resp, parse_mode="Markdown")
 
+# --- ARRANQUE PRINCIPAL ---
 def main():
-    # Arrancar el servidor web en un hilo secundario para mantener a Render activo
+    # 1. Iniciar servidor web para que Render no suspenda el bot
     t = threading.Thread(target=ejecutar_servidor, daemon=True)
     t.start()
-    print("🌐 Servidor Flask iniciado. Render no se suspenderá.")
+    print("🌐 Servidor Flask activo. Render permanecerá en línea.")
 
-    # Iniciar bot de Telegram
+    # 2. Iniciar bot de Telegram con comandos válidos
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler(["start", "Start"], start))
-    app.add_handler(CommandHandler(["buscar", "Buscar"], buscar))
-    app.add_handler(CommandHandler(["hoy", "Hoy"], hoy))
-    app.add_handler(CommandHandler(["manana", "Manana", "mañana", "Mañana"], manana))
-    app.add_handler(CommandHandler(["analizar", "Analizar"], analizar))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("buscar", buscar))
+    app.add_handler(CommandHandler("hoy", hoy))
+    app.add_handler(CommandHandler("manana", manana))
+    app.add_handler(CommandHandler("analizar", analizar))
 
-    print("🟢 BOT EN VIVO 24/7 EN RENDER.")
+    print("🟢 BOT OPERATIVO Y ESCUCHANDO 24/7 EN TELEGRAM.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-        
+    
