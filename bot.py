@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import unicodedata
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import numpy as np
 import requests
@@ -14,38 +15,43 @@ ZONA_LOCAL = pytz.timezone("America/Bogota")
 # ==========================================
 # 🔑 TUS CLAVES DIRECTAS
 # ==========================================
-TELEGRAM_TOKEN = "PEGA_AQUI_TU_TOKEN_DE_BOTFATHER".strip()
-API_FOOTBALL_KEY = "PEGA_AQUI_TU_API_KEY_DE_API_FOOTBALL".strip()
+TELEGRAM_TOKEN = "8974980311:AAG-S2fXIinCoak8rZ14s3N6VF5N-m6V7VE,".strip()
+API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
 
-# --- SERVIDOR HTTP PARA QUE RENDER NO APAGUE EL SERVICIO ---
+# Función para quitar tildes y caracteres especiales
+def normalizar_texto(texto):
+    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').strip()
+
+# --- SERVIDOR HTTP PARA RENDER ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Predictor Pro activo 24/7 en Render")
+        self.wfile.write(b"Bot Predictor Pro activo 24/7")
 
     def log_message(self, format, *args):
-        return  # Silenciar logs http para mantener limpia la consola
+        return
 
 def iniciar_servidor_web():
     try:
         servidor = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
         servidor.serve_forever()
     except Exception as e:
-        print(f"Aviso del servidor web: {e}")
+        print(f"Aviso servidor: {e}")
 
-# --- CONSULTA DINÁMICA DE HISTORIAL EN LA API ---
+# --- CONSULTA DINÁMICA DE ESTADÍSTICAS ---
 def obtener_metricas_equipo(nombre_equipo, api_key):
     headers = {"x-apisports-key": api_key}
+    nombre_limpio = normalizar_texto(nombre_equipo)
     try:
-        url_t = f"https://v3.football.api-sports.io/teams?search={nombre_equipo.strip()}"
-        res_t = requests.get(url_t, headers=headers, timeout=8).json().get("response", [])
+        url_t = f"https://v3.football.api-sports.io/teams?search={nombre_limpio}"
+        res_t = requests.get(url_t, headers=headers, timeout=10).json().get("response", [])
         if not res_t:
             return None
         team_id = res_t[0]["team"]["id"]
 
         url_f = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=10"
-        res_f = requests.get(url_f, headers=headers, timeout=8).json().get("response", [])
+        res_f = requests.get(url_f, headers=headers, timeout=10).json().get("response", [])
         if not res_f:
             return None
 
@@ -65,7 +71,7 @@ def obtener_metricas_equipo(nombre_equipo, api_key):
     except Exception:
         return None
 
-# --- MODELO MATEMÁTICO: BET BUILDER ---
+# --- MODELO MATEMÁTICO BET BUILDER ---
 def calcular_mercados(loc, vis, api_key):
     stats_loc = obtener_metricas_equipo(loc, api_key)
     stats_vis = obtener_metricas_equipo(vis, api_key)
@@ -152,16 +158,13 @@ def calcular_mercados(loc, vis, api_key):
         ("Equipo Ganador", f"Cualquiera Gana: {loc} o {vis} (12)", p_12),
         ("Equipo Ganador", f"Empate Apuesta No Válida: {loc}", p_dnb_loc),
         ("Equipo Ganador", f"Empate Apuesta No Válida: {vis}", p_dnb_vis),
-
         ("Tiros de Esquina", "Más de 8.5 córners totales", p_corners85),
         ("Tiros de Esquina", "Más de 9.5 córners totales", p_corners95),
         ("Tiros de Esquina", "Menos de 11.5 córners totales", p_corners_u115),
-
         ("Total Goles", "Más de 1.5 goles totales", p_o15),
         ("Total Goles", "Más de 2.0 goles asiáticos", p_o20),
         ("Total Goles", "Menos de 3.0 goles asiáticos", p_u30),
         ("Total Goles", "Menos de 3.5 goles totales", p_u35),
-
         ("Tiros a Puerta", "Más de 7.5 tiros al arco totales", p_tarco75),
         ("Tiros a Puerta", "Más de 8.5 tiros al arco totales", p_tarco85),
         ("Tiros a Puerta", "Menos de 10.5 tiros al arco totales", p_tarco_u105),
@@ -169,15 +172,12 @@ def calcular_mercados(loc, vis, api_key):
         ("Tiros a Puerta", f"{loc} Más de 4.5 tiros al arco", p_tarco_loc45),
         ("Tiros a Puerta", f"{vis} Más de 2.5 tiros al arco", p_tarco_vis25),
         ("Tiros a Puerta", f"{vis} Más de 3.5 tiros al arco", p_tarco_vis35),
-
         ("Tiros Totales", "Más de 21.5 tiros totales", p_tiros215),
         ("Tiros Totales", "Más de 22.5 tiros totales", p_tiros225),
         ("Tiros Totales", "Menos de 26.5 tiros totales", p_tiros_u265),
-
         ("Tarjetas Amarillas", "Más de 3.5 tarjetas amarillas", p_amarillas35),
         ("Tarjetas Amarillas", "Más de 4.5 tarjetas amarillas", p_amarillas45),
         ("Tarjetas Amarillas", "Menos de 5.5 tarjetas amarillas", p_amarillas_u55),
-
         ("Total Faltas", "Más de 22.5 faltas totales", p_faltas225),
         ("Total Faltas", "Más de 23.5 faltas totales", p_faltas235),
         ("Total Faltas", "Menos de 26.5 faltas totales", p_faltas_u265)
@@ -218,144 +218,117 @@ def calcular_mercados(loc, vis, api_key):
 # --- COMANDOS TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "⚽ *PREDICTOR PRO 24/7 EN LÍNEA*\n\n"
+        "⚽ *PREDICTOR PRO 24/7 CONECTADO*\n\n"
         "Comandos disponibles:\n"
-        "👉 `/hoy` : Partidos activos/restantes de hoy.\n"
-        "👉 `/manana` : Cartelera programada de mañana.\n"
-        "👉 `/buscar Equipo` : Buscar partido de hoy o mañana.\n"
-        "👉 `/analizar Local vs Visitante` : Análisis Bet Builder."
+        "👉 `/hoy` : Lista de partidos de hoy (Hora Col).\n"
+        "👉 `/manana` : Cartelera de partidos de mañana.\n"
+        "👉 `/buscar Equipo` : Próximos partidos de cualquier club.\n"
+        "👉 `/analizar Local vs Visitante` : Simular cuotas con Bet Builder."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     termino = " ".join(context.args).strip()
     if not termino:
-        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar Villarreal`", parse_mode="Markdown")
+        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar America de Cali`", parse_mode="Markdown")
         return
 
-    await update.message.reply_text(f"🔍 Rastreador activo para: *{termino}*...", parse_mode="Markdown")
+    termino_limpio = normalizar_texto(termino)
+    await update.message.reply_text(f"🔍 Rastreador buscando: *{termino}*...", parse_mode="Markdown")
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
     try:
-        url_team = f"https://v3.football.api-sports.io/teams?search={termino}"
+        url_team = f"https://v3.football.api-sports.io/teams?search={termino_limpio}"
         r_team = requests.get(url_team, headers=headers, timeout=12).json()
         equipos = r_team.get("response", [])
 
         if not equipos:
-            await update.message.reply_text(f"No se encontró un equipo llamado '{termino}'.")
+            await update.message.reply_text(f"No se encontró un equipo llamado '{termino}'. Prueba con un nombre más corto (ej. `America` o `Junior`).")
             return
 
         team_id = equipos[0]["team"]["id"]
         team_name = equipos[0]["team"]["name"]
 
-        ahora_col = datetime.now(ZONA_LOCAL)
-        fecha_hoy = ahora_col.strftime("%Y-%m-%d")
-        fecha_manana = (ahora_col + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&season={ahora_col.year}&timezone=America/Bogota"
+        # Buscar los próximos 5 partidos del equipo sin restricción de temporada fija
+        url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&next=5&timezone=America/Bogota"
         r_fix = requests.get(url_fix, headers=headers, timeout=12).json()
         partidos = r_fix.get("response", [])
 
-        coincidencias = [
-            f for f in partidos 
-            if (f["fixture"]["date"].startswith(fecha_hoy) or f["fixture"]["date"].startswith(fecha_manana))
-            and f["fixture"]["status"]["short"] in ['1H', 'HT', '2H', 'ET', 'P', 'BT', 'LIVE', 'NS']
-        ]
-
-        if not coincidencias:
-            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados para hoy ni mañana.", parse_mode="Markdown")
+        if not partidos:
+            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados próximos en la API.", parse_mode="Markdown")
             return
 
-        resp = f"🎯 *PARTIDOS LOCALIZADOS ({team_name}):*\n\n"
-        for p in coincidencias:
-            fecha_p = datetime.fromisoformat(p["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
-            dia_txt = "HOY" if fecha_p.strftime("%Y-%m-%d") == fecha_hoy else "MAÑANA"
-            hora_str = fecha_p.strftime("%I:%M %p")
+        resp = f"🎯 *PRÓXIMOS ENCUENTROS DE {team_name.upper()}:*\n\n"
+        for p in partidos:
+            fecha_iso = p["fixture"]["date"]
+            fecha_dt = datetime.fromisoformat(fecha_iso.replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
+            fecha_str = fecha_dt.strftime("%d/%m - %I:%M %p")
             loc = p["teams"]["home"]["name"]
             vis = p["teams"]["away"]["name"]
             liga = p["league"]["name"]
-            resp += f"• `[{dia_txt} - {hora_str}]` *{loc} vs {vis}*\n  🏆 _{liga}_\n\n"
+            resp += f"• `[{fecha_str}]` *{loc} vs {vis}*\n  🏆 _{liga}_\n\n"
 
-        resp += "Para evaluar ejecuta:\n`/analizar Local vs Visitante`"
+        resp += "Analiza cualquiera con:\n`/analizar Local vs Visitante`"
         await update.message.reply_text(resp, parse_mode="Markdown")
 
     except Exception as e:
-        await update.message.reply_text(f"Error en la búsqueda: {e}")
+        await update.message.reply_text(f"Error consultando el equipo: {e}")
 
 async def hoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Obteniendo partidos activos y restantes en hora Colombia...")
+    await update.message.reply_text("⏳ Consultando cartelera completa de hoy (Hora Colombia)...")
     try:
-        ahora_local = datetime.now(ZONA_LOCAL)
-        fecha_hoy = ahora_local.strftime("%Y-%m-%d")
-        fin_dia_local = ZONA_LOCAL.localize(datetime(ahora_local.year, ahora_local.month, ahora_local.day, 23, 59, 59))
-
+        fecha_hoy = datetime.now(ZONA_LOCAL).strftime("%Y-%m-%d")
         headers = {"x-apisports-key": API_FOOTBALL_KEY}
         url = f"https://v3.football.api-sports.io/fixtures?date={fecha_hoy}&timezone=America/Bogota"
         r = requests.get(url, headers=headers, timeout=15).json()
-        todos = r.get("response", [])
+        partidos = r.get("response", [])
 
-        estados_en_vivo = ['1H', 'HT', '2H', 'ET', 'P', 'BT', 'LIVE']
-        restantes = []
-
-        for f in todos:
-            st = f.get("fixture", {}).get("status", {}).get("short")
-            if st in ['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'WO', 'AWD']:
-                continue
-
-            fecha_partido = datetime.fromisoformat(f["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
-            if st in estados_en_vivo or (ahora_local <= fecha_partido <= fin_dia_local):
-                f["fecha_col"] = fecha_partido
-                restantes.append(f)
-
-        if not restantes:
-            await update.message.reply_text("No hay más partidos restantes para hoy. Revisa los de mañana con `/manana`.")
+        if not partidos:
+            await update.message.reply_text("No hay partidos listados para la fecha de hoy en la API.")
             return
 
-        bloque = f"📅 *PARTIDOS RESTANTES DE HOY ({len(restantes)} DISPONIBLES):*\n\n"
-        for idx, p in enumerate(restantes[:25], start=1):
-            st = p['fixture']['status']['short']
-            tag = "🔴 EN VIVO" if st in ['1H', 'HT', '2H', 'LIVE'] else "⏳ PRÓXIMO"
-            hora_p = p["fecha_col"].strftime("%I:%M %p")
-            loc = p['teams']['home']['name']
-            vis = p['teams']['away']['name']
-            liga = p['league']['name']
-            bloque += f"{idx}. `{tag}` [{hora_p}] *{loc} vs {vis}* _({liga})_\n"
-
-        bloque += "\nUsa `/analizar Local vs Visitante` o `/buscar NombreEquipo`"
-        await update.message.reply_text(bloque, parse_mode="Markdown")
-
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
-
-async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Consultando partidos para MAÑANA...")
-    try:
-        manana_local = datetime.now(ZONA_LOCAL) + timedelta(days=1)
-        fecha_manana = manana_local.strftime("%Y-%m-%d")
-
-        headers = {"x-apisports-key": API_FOOTBALL_KEY}
-        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_manana}&timezone=America/Bogota"
-        r = requests.get(url, headers=headers, timeout=15).json()
-        todos = r.get("response", [])
-
-        if not todos:
-            await update.message.reply_text("No se encontraron partidos programados para mañana.")
-            return
-
-        bloque = f"📅 *PARTIDOS DE MAÑANA ({manana_local.strftime('%d/%m/%Y')}):*\n\n"
-        for idx, p in enumerate(todos[:25], start=1):
-            fecha_p = datetime.fromisoformat(p["fixture"]["date"].replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
-            hora_p = fecha_p.strftime("%I:%M %p")
-            loc = p['teams']['home']['name']
-            vis = p['teams']['away']['name']
-            liga = p['league']['name']
-            bloque += f"{idx}. [{hora_p}] *{loc} vs {vis}* _({liga})_\n"
+        bloque = f"📅 *PARTIDOS DE HOY ({fecha_hoy}):*\n\n"
+        for idx, p in enumerate(partidos[:25], start=1):
+            hora = p["fixture"]["date"][11:16]
+            st = p["fixture"]["status"]["short"]
+            loc = p["teams"]["home"]["name"]
+            vis = p["teams"]["away"]["name"]
+            liga = p["league"]["name"]
+            bloque += f"{idx}. `[{hora}]` *{loc} vs {vis}* — _{liga}_ ({st})\n"
 
         bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
         await update.message.reply_text(bloque, parse_mode="Markdown")
 
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(f"Error al cargar hoy: {e}")
+
+async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Consultando cartelera completa de mañana...")
+    try:
+        manana_dt = datetime.now(ZONA_LOCAL) + timedelta(days=1)
+        fecha_manana = manana_dt.strftime("%Y-%m-%d")
+        headers = {"x-apisports-key": API_FOOTBALL_KEY}
+        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_manana}&timezone=America/Bogota"
+        r = requests.get(url, headers=headers, timeout=15).json()
+        partidos = r.get("response", [])
+
+        if not partidos:
+            await update.message.reply_text("No se encontraron partidos para mañana en la API.")
+            return
+
+        bloque = f"📅 *PARTIDOS DE MAÑANA ({fecha_manana}):*\n\n"
+        for idx, p in enumerate(partidos[:25], start=1):
+            hora = p["fixture"]["date"][11:16]
+            loc = p["teams"]["home"]["name"]
+            vis = p["teams"]["away"]["name"]
+            liga = p["league"]["name"]
+            bloque += f"{idx}. `[{hora}]` *{loc} vs {vis}* — _{liga}_\n"
+
+        bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
+        await update.message.reply_text(bloque, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"Error al cargar mañana: {e}")
 
 async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = " ".join(context.args)
@@ -366,7 +339,7 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc, vis = texto.split(" vs ")
     loc, vis = loc.strip(), vis.strip()
 
-    await update.message.reply_text(f"📊 Analizando métricas dinámicas para: *{loc} vs {vis}*...", parse_mode="Markdown")
+    await update.message.reply_text(f"📊 Analizando métricas para: *{loc} vs {vis}*...", parse_mode="Markdown")
 
     picks, xg_l, xg_v = calcular_mercados(loc, vis, API_FOOTBALL_KEY)
 
@@ -383,14 +356,10 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(resp, parse_mode="Markdown")
 
-# --- ARRANQUE PRINCIPAL ---
 def main():
-    # 1. Iniciar servidor web de respaldo para Render
     hilo_web = threading.Thread(target=iniciar_servidor_web, daemon=True)
     hilo_web.start()
-    print("🌐 Servidor web de Render escuchando en el puerto 10000.")
 
-    # 2. Configurar Telegram Bot
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler(["start", "Start"], start))
     app.add_handler(CommandHandler(["buscar", "Buscar"], buscar))
@@ -403,4 +372,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-                                
