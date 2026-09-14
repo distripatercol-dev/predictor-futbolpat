@@ -1,45 +1,37 @@
-import asyncio
+import os
 import threading
 import unicodedata
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import numpy as np
 import requests
 import pytz
 from datetime import datetime, timedelta
 from scipy.stats import poisson, norm
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+# --- 1. SERVIDOR WEB NATIVO PARA QUE RENDER LO MANTENGA VIVO 24/7 ---
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "Bot Predictor Pro está activo y operando 24/7", 200
+
+def ejecutar_servidor():
+    puerto = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=puerto)
 
 ZONA_LOCAL = pytz.timezone("America/Bogota")
 
 # ==========================================
 # 🔑 TUS CLAVES DIRECTAS
 # ==========================================
-TELEGRAM_TOKEN = "8974980311:AAG-S2fXIinCoak8rZ14s3N6VF5N-m6V7VE,".strip()
+TELEGRAM_TOKEN = "8974980311".strip()
 API_FOOTBALL_KEY = "f6baa8c5aac7fa95da1f2e356bf744be".strip()
 
-# Función para quitar tildes y caracteres especiales
 def normalizar_texto(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').strip()
 
-# --- SERVIDOR HTTP PARA RENDER ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot Predictor Pro activo 24/7")
-
-    def log_message(self, format, *args):
-        return
-
-def iniciar_servidor_web():
-    try:
-        servidor = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
-        servidor.serve_forever()
-    except Exception as e:
-        print(f"Aviso servidor: {e}")
-
-# --- CONSULTA DINÁMICA DE ESTADÍSTICAS ---
+# --- CONSULTA DINÁMICA A LA API ---
 def obtener_metricas_equipo(nombre_equipo, api_key):
     headers = {"x-apisports-key": api_key}
     nombre_limpio = normalizar_texto(nombre_equipo)
@@ -218,47 +210,43 @@ def calcular_mercados(loc, vis, api_key):
 # --- COMANDOS TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "⚽ *PREDICTOR PRO 24/7 CONECTADO*\n\n"
+        "⚽ *PREDICTOR PRO 24/7 EN LÍNEA*\n\n"
         "Comandos disponibles:\n"
-        "👉 `/hoy` : Lista de partidos de hoy (Hora Col).\n"
+        "👉 `/hoy` : Partidos de hoy (Hora Colombia).\n"
         "👉 `/manana` : Cartelera de partidos de mañana.\n"
         "👉 `/buscar Equipo` : Próximos partidos de cualquier club.\n"
-        "👉 `/analizar Local vs Visitante` : Simular cuotas con Bet Builder."
+        "👉 `/analizar Local vs Visitante` : Simular cuotas Bet Builder."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     termino = " ".join(context.args).strip()
     if not termino:
-        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar America de Cali`", parse_mode="Markdown")
+        await update.message.reply_text("Ingresa el equipo. Ejemplo: `/buscar America`", parse_mode="Markdown")
         return
 
     termino_limpio = normalizar_texto(termino)
-    await update.message.reply_text(f"🔍 Rastreador buscando: *{termino}*...", parse_mode="Markdown")
+    await update.message.reply_text(f"🔍 Buscando partidos de: *{termino}*...", parse_mode="Markdown")
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
     try:
-        url_team = f"https://v3.football.api-sports.io/teams?search={termino_limpio}"
-        r_team = requests.get(url_team, headers=headers, timeout=12).json()
-        equipos = r_team.get("response", [])
-
-        if not equipos:
-            await update.message.reply_text(f"No se encontró un equipo llamado '{termino}'. Prueba con un nombre más corto (ej. `America` o `Junior`).")
+        url_t = f"https://v3.football.api-sports.io/teams?search={termino_limpio}"
+        res_t = requests.get(url_t, headers=headers, timeout=12).json().get("response", [])
+        if not res_t:
+            await update.message.reply_text(f"No se encontró el club '{termino}'. Prueba con un nombre corto (ej. `America`, `Junior`, `Nacional`).")
             return
 
-        team_id = equipos[0]["team"]["id"]
-        team_name = equipos[0]["team"]["name"]
+        team_id = res_t[0]["team"]["id"]
+        team_name = res_t[0]["team"]["name"]
 
-        # Buscar los próximos 5 partidos del equipo sin restricción de temporada fija
         url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&next=5&timezone=America/Bogota"
-        r_fix = requests.get(url_fix, headers=headers, timeout=12).json()
-        partidos = r_fix.get("response", [])
+        partidos = requests.get(url_fix, headers=headers, timeout=12).json().get("response", [])
 
         if not partidos:
-            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados próximos en la API.", parse_mode="Markdown")
+            await update.message.reply_text(f"Se localizó a *{team_name}*, pero no tiene partidos programados en los próximos días.", parse_mode="Markdown")
             return
 
-        resp = f"🎯 *PRÓXIMOS ENCUENTROS DE {team_name.upper()}:*\n\n"
+        resp = f"🎯 *PRÓXIMOS PARTIDOS DE {team_name.upper()}:*\n\n"
         for p in partidos:
             fecha_iso = p["fixture"]["date"]
             fecha_dt = datetime.fromisoformat(fecha_iso.replace("Z", "+00:00")).astimezone(ZONA_LOCAL)
@@ -268,56 +256,26 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             liga = p["league"]["name"]
             resp += f"• `[{fecha_str}]` *{loc} vs {vis}*\n  🏆 _{liga}_\n\n"
 
-        resp += "Analiza cualquiera con:\n`/analizar Local vs Visitante`"
+        resp += "Analiza con:\n`/analizar Local vs Visitante`"
         await update.message.reply_text(resp, parse_mode="Markdown")
 
     except Exception as e:
-        await update.message.reply_text(f"Error consultando el equipo: {e}")
+        await update.message.reply_text(f"Error en la consulta: {e}")
 
 async def hoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Consultando cartelera completa de hoy (Hora Colombia)...")
+    await update.message.reply_text("⏳ Consultando partidos de hoy...")
     try:
         fecha_hoy = datetime.now(ZONA_LOCAL).strftime("%Y-%m-%d")
         headers = {"x-apisports-key": API_FOOTBALL_KEY}
         url = f"https://v3.football.api-sports.io/fixtures?date={fecha_hoy}&timezone=America/Bogota"
-        r = requests.get(url, headers=headers, timeout=15).json()
-        partidos = r.get("response", [])
+        r = requests.get(url, headers=headers, timeout=15).json().get("response", [])
 
-        if not partidos:
-            await update.message.reply_text("No hay partidos listados para la fecha de hoy en la API.")
+        if not r:
+            await update.message.reply_text("No hay partidos listados para hoy en la API.")
             return
 
         bloque = f"📅 *PARTIDOS DE HOY ({fecha_hoy}):*\n\n"
-        for idx, p in enumerate(partidos[:25], start=1):
-            hora = p["fixture"]["date"][11:16]
-            st = p["fixture"]["status"]["short"]
-            loc = p["teams"]["home"]["name"]
-            vis = p["teams"]["away"]["name"]
-            liga = p["league"]["name"]
-            bloque += f"{idx}. `[{hora}]` *{loc} vs {vis}* — _{liga}_ ({st})\n"
-
-        bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
-        await update.message.reply_text(bloque, parse_mode="Markdown")
-
-    except Exception as e:
-        await update.message.reply_text(f"Error al cargar hoy: {e}")
-
-async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Consultando cartelera completa de mañana...")
-    try:
-        manana_dt = datetime.now(ZONA_LOCAL) + timedelta(days=1)
-        fecha_manana = manana_dt.strftime("%Y-%m-%d")
-        headers = {"x-apisports-key": API_FOOTBALL_KEY}
-        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_manana}&timezone=America/Bogota"
-        r = requests.get(url, headers=headers, timeout=15).json()
-        partidos = r.get("response", [])
-
-        if not partidos:
-            await update.message.reply_text("No se encontraron partidos para mañana en la API.")
-            return
-
-        bloque = f"📅 *PARTIDOS DE MAÑANA ({fecha_manana}):*\n\n"
-        for idx, p in enumerate(partidos[:25], start=1):
+        for idx, p in enumerate(r[:25], start=1):
             hora = p["fixture"]["date"][11:16]
             loc = p["teams"]["home"]["name"]
             vis = p["teams"]["away"]["name"]
@@ -326,9 +284,33 @@ async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
         await update.message.reply_text(bloque, parse_mode="Markdown")
-
     except Exception as e:
-        await update.message.reply_text(f"Error al cargar mañana: {e}")
+        await update.message.reply_text(f"Error: {e}")
+
+async def manana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Consultando partidos de mañana...")
+    try:
+        fecha_manana = (datetime.now(ZONA_LOCAL) + timedelta(days=1)).strftime("%Y-%m-%d")
+        headers = {"x-apisports-key": API_FOOTBALL_KEY}
+        url = f"https://v3.football.api-sports.io/fixtures?date={fecha_manana}&timezone=America/Bogota"
+        r = requests.get(url, headers=headers, timeout=15).json().get("response", [])
+
+        if not r:
+            await update.message.reply_text("No se encontraron partidos para mañana en la API.")
+            return
+
+        bloque = f"📅 *PARTIDOS DE MAÑANA ({fecha_manana}):*\n\n"
+        for idx, p in enumerate(r[:25], start=1):
+            hora = p["fixture"]["date"][11:16]
+            loc = p["teams"]["home"]["name"]
+            vis = p["teams"]["away"]["name"]
+            liga = p["league"]["name"]
+            bloque += f"{idx}. `[{hora}]` *{loc} vs {vis}* — _{liga}_\n"
+
+        bloque += "\nAnaliza con:\n`/analizar Local vs Visitante`"
+        await update.message.reply_text(bloque, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
 
 async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = " ".join(context.args)
@@ -339,7 +321,7 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc, vis = texto.split(" vs ")
     loc, vis = loc.strip(), vis.strip()
 
-    await update.message.reply_text(f"📊 Analizando métricas para: *{loc} vs {vis}*...", parse_mode="Markdown")
+    await update.message.reply_text(f"📊 Analizando métricas dinámicas para: *{loc} vs {vis}*...", parse_mode="Markdown")
 
     picks, xg_l, xg_v = calcular_mercados(loc, vis, API_FOOTBALL_KEY)
 
@@ -357,9 +339,12 @@ async def analizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(resp, parse_mode="Markdown")
 
 def main():
-    hilo_web = threading.Thread(target=iniciar_servidor_web, daemon=True)
-    hilo_web.start()
+    # Arrancar el servidor web en un hilo secundario para mantener a Render activo
+    t = threading.Thread(target=ejecutar_servidor, daemon=True)
+    t.start()
+    print("🌐 Servidor Flask iniciado. Render no se suspenderá.")
 
+    # Iniciar bot de Telegram
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler(["start", "Start"], start))
     app.add_handler(CommandHandler(["buscar", "Buscar"], buscar))
@@ -367,8 +352,9 @@ def main():
     app.add_handler(CommandHandler(["manana", "Manana", "mañana", "Mañana"], manana))
     app.add_handler(CommandHandler(["analizar", "Analizar"], analizar))
 
-    print("🟢 BOT INICIADO Y CORRIENDO EN LA NUBE 24/7.")
+    print("🟢 BOT EN VIVO 24/7 EN RENDER.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
+        
