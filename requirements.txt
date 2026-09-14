@@ -1,7 +1,8 @@
-python-telegram-bot==20.3
+python-telegram-bot>=21.0
 requests
 numpy
 scipy
 pytz
 flask
 gunicorn
+
